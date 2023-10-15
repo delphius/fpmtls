@@ -11,24 +11,26 @@ program fptls;
 {$mode objfpc}{$H+}
 uses
   sysutils, fpsha256, fphashutils, sockets, resolve;
+
+  var
+   Debug: Boolean;
   // https://www.rfc-editor.org/rfc/rfc8446.html#section-4.1.2
   // The legacy_version field MUST be set to 0x0303, which is the version number for TLS 1.2
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
-  //LEGACY_TLS_VERSION: array[0..1] of Byte = ($03, $03);
+  const
+    LEGACY_TLS_VERSION: array of Byte = ($03, $03);
 
   // TLS Cipher Suites
   // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4
   // https://www.rfc-editor.org/rfc/rfc8446.html#appendix-B.4
   //TLS_AES_128_GCM_SHA256: array[0..1] of Byte = ($13, $01);
 
-  // TLS ContentType
-  // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-5
-  //CHANGE_CIPHER: Byte = $14;
-  //ALERT: Byte = $15;
-  //HANDSHAKE: Byte = $16;
-  //APPLICATION_DATA: Byte = $17;
-
 //**BYTE MANIPULATION HELPERS
+//  Converts an array of bytes to an unsigned 32-bit integer (LongWord) in big-endian format.
+function WordToBE(Buffer:TBytes):Word;
+begin
+ Result:= ((Buffer[0] and 255) shl 8) or (Buffer[1] and 255);
+end;
 //  Converts an array of bytes to an unsigned 32-bit integer (LongWord) in big-endian format.
 function LongWordToBE(Buffer:PByte):LongWord;
 begin
@@ -69,6 +71,10 @@ begin
 end;
 
 //**SYMMETRIC CIPHERS
+//  CHACHA20 + POLY1305
+
+
+
 // AES 128 + EXPAND KEYS
 const  
   {`AES_ROUNDS` is a constant that specifies the number of rounds (iterations) in the Advanced Encryption Standard (AES) encryption algorithm.
@@ -115,7 +121,11 @@ begin
       enc_keys[t][i] := 0;
 
   for i := 0 to 3 do
-      enc_keys[0][i] := LongWordToBE(PByte(Copy(key, i * 4, 4)));
+      begin
+        //WriteLn(BytesToHexStr(Copy(key, i * 4, 4)));
+        enc_keys[0][i] := LongWordToBE(PByte(Copy(key, i * 4, 4)));
+        //WriteLn(BytesToHexStr(UInt32ToBytesBE(enc_keys[0][i],4)));
+      end;
   for t := 1 to AES_ROUNDS do
   begin
     for i := 0 to 3 do
@@ -193,7 +203,14 @@ begin
    end;
   SetLength(Result, 16);
   for i := 0 to 3 do
-      Move(State[i], Result[i * 4], 4);
+      begin
+        Move(State[i], Result[i * 4], 4);
+        //WriteLn(State[i]);
+        //WriteLn(BytesToHexStr(UInt32ToBytesBE(State[i], 4)));
+        //WriteLn(BytesToHexStr(Result));
+      end;
+      
+
 end;
 
 //  AES COUNTER MODE
@@ -782,7 +799,9 @@ begin
   Move(clientHelloLenBytes[0], clientHelloTLV[i], Length(clientHelloLenBytes));
   Inc(i, Length(clientHelloLenBytes));
   Move(clientHelloData[0], clientHelloTLV[i], Length(clientHelloData));
-
+  Result := clientHelloTLV;
+  
+  if not Debug then Exit;
   Writeln('Length is ', Length(clientHelloData), ': ', BytesToHexStr(clientHelloLenBytes));
   Writeln('Legacy client version is TLS 1.2: ', BytesToHexStr(LEGACY_TLS_VERSION));
   Writeln('Client random: ', BytesToHexStr(clientRandom));
@@ -811,74 +830,190 @@ begin
   Writeln('Key length ', Length(ecdhPubKey), ': ', BytesToHexStr(keyExchangeLen));
   Writeln('Key is: ', BytesToHexStr(ecdhPubKey));
   Writeln('Client Hello TLV: ', BytesToHexStr(clientHelloTLV));
-  Result := clientHelloTLV;
 end;
+
+function HandleServerHello(serverHello: TBytes): TBytes;
+var
+  //handshakeType: Byte;
+  //SERVER_HELLO: Byte;
+  serverHelloLen, serverVersion, serverRandom, sessionID, cipherSuite, extensions: TBytes;
+  sessionIDLen, compressionMethod: Byte;
+  publicECKey: TBytes;
+  ptr, extensionType, {group,} keyExchangeLen: Integer;
+  {SECP256R1_GROUP,} KEY_SHARE: Byte;
+  {publicECKeyX, publicECKeyY,} extensionLength, extensionsLength: UInt32;
+begin
+  if Debug then WriteLn('--------------------' + #13#10 + '<--Parse server Hello');
+  if Debug then WriteLn('Server Hello length: ', Length(serverHello));
+  //SERVER_HELLO := $02;
+  //SECP256R1_GROUP := $17;
+  KEY_SHARE := $33;
+
+  // Initialize variables
+  ptr := 0;
+  publicECKey := nil;
+
+  // Extract data from the server hello message
+  //handshakeType := serverHello[0];
+  //Assert(handshakeType = SERVER_HELLO);
+
+  serverHelloLen := Copy(serverHello, 1, 3);
+  serverVersion := Copy(serverHello, 4, 2);
+  serverRandom := Copy(serverHello, 6, 32);
+
+  sessionIDLen := serverHello[38];
+  sessionID := Copy(serverHello, 39, sessionIDLen);
+
+  cipherSuite := Copy(serverHello, 39 + sessionIDLen, 2);
+  //Assert(cipherSuite = TLS_AES_128_GCM_SHA256);
+
+  compressionMethod := serverHello[39 + sessionIDLen + 2];
+
+  extensionsLength := (serverHello[39 + sessionIDLen + 3] shl 8) or serverHello[39 + sessionIDLen + 4];
+  extensions := Copy(serverHello, 39 + sessionIDLen + 5, extensionsLength);
+
+  // Extract public EC key if present
+  while ptr < extensionsLength do
+  begin
+    extensionType := (extensions[ptr] shl 8) or extensions[ptr + 1];
+    extensionLength := (extensions[ptr + 2] shl 8) or extensions[ptr + 3];
+
+    if extensionType <> KEY_SHARE then
+    begin
+      Inc(ptr, extensionLength + 4);
+      Continue;
+    end;
+    //group := (extensions[ptr + 4] shl 8) or extensions[ptr + 5];
+    //Assert(group = SECP256R1_GROUP);
+    //WriteLn(IntToHex(group));
+    keyExchangeLen := (extensions[ptr + 6] shl 8) or extensions[ptr + 7];
+    //WriteLn(keyExchangeLen);
+    publicECKey := Copy(extensions, ptr + 8, keyExchangeLen);
+    Break;
+  end;
+
+  if Length(publicECKey) = 0 then
+    raise Exception.Create('No public ECDH key in server hello');
+
+  //publicECKeyX := (publicECKey[1] shl 24) or (publicECKey[2] shl 16) or (publicECKey[3] shl 8) or publicECKey[4];
+  //publicECKeyY := (publicECKey[33] shl 24) or (publicECKey[34] shl 16) or (publicECKey[35] shl 8) or publicECKey[36];
+
+  // Return extracted data
+  SetLength(Result, 97);  // 32 (serverRandom) + 65 (publicECKeyXY)
+  Move(serverRandom[0], Result[0], 32);
+  Move(publicECKey[0], Result[32], 65);
+  if not Debug then Exit;
+  WriteLn('Type is the server hello: ', serverHello[0].ToHexString);
+  WriteLn('Length is ', (serverHelloLen[0] shl 16) or (serverHelloLen[1] shl 8) or serverHelloLen[2], ': ', BytesToHexStr(serverHelloLen));
+  WriteLn('Legacy server version is TLS 1.2: ', BytesToHexStr(serverVersion));
+  WriteLn('Server random: ', BytesToHexStr(serverRandom));
+  WriteLn('Session id len is ', sessionIDLen, ': ', BytesToHexStr(sessionID));
+  WriteLn('Session id: ', BytesToHexStr(sessionID));
+  WriteLn('Cipher suite is TLS_AES_128_GCM_SHA256: ', BytesToHexStr(cipherSuite));
+  WriteLn('Compression method is no compression: ', compressionMethod);
+  WriteLn('Extensions len is ', extensionsLength, ': ', BytesToHexStr(UInt32ToBytesBE(extensionsLength, 2)));
+  WriteLn('Extension parsing was skipped, but public_ec_key is ', BytesToHexStr(publicECKey));
+  WriteLn('--------------------');
+end;
+
+
+//  TLS ContentType
+//  https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-5
+type
+  TRecType = (
+    TLS_CHANGE_CIPHER    = $14,
+    TLS_ALERT            = $15,
+    TLS_HANDSHAKE        = $16,
+    TLS_APPLICATION_DATA = $17,
+    TLS_HEARTBEAT        = $18,
+    TLS_TLS12_CID        = $19,
+    TLS_ACK              = $20
+  );
 
 var
   key, nonce, associated_data, plaintext, encrypted, decrypted, shakey, early_secret_bytes, res_bytes: TBytes;
   early_secret :String;
   CSocket: TSocket;
   Address: TInetSockAddr;
-  Buffer: array[0..16384] of Byte;
-  BytesRead: Integer;
-  IPAddr: string;
-  request: TBytes;
-  hrs: THostResolver;
+  request,ServerResponce: TBytes;
+  RecType: TRecType;
 const
-  host = 'example.org';
-  port = 443;
+  host = 'localhost';
+  port = 44330;
+  ALL_ZERO_BYTES: TBytes = (
+    $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00,
+    $00, $00, $00, $00, $00, $00, $00, $00
+  );
 
-procedure SendCommand(Socket: TSocket; const Command: TBytes);
+function RecvNumBytes(Socket: TSocket; num: Integer): TBytes;
   var
-   tls_record: TBytes;
-   //i: Integer;
-  begin
-    //tls_record = rec_type + LEGACY_TLS_VERSION + num_to_bytes(len(msg), 2) + msg
-    tls_record := ConcatenateBytes(TBytes([$16,$03,$03]), ConcatenateBytes(UInt32ToBytesBE(Length(Command), 2), Command));
-    WriteLn('Client: ', BytesToHexStr(tls_record));
-    fpsend(Socket, PByte(tls_record), longword(Length(tls_record)), 0);
-    BytesRead := fprecv(Socket, @Buffer[0], SizeOf(Buffer), 0);
-    WriteLn('Bytes read: ', BytesRead);
-    {for i:= 0 to BytesRead do
-      Write(BytesToHexStr(TBytes([Buffer[i]])));}
-  end;
+   Buffer: array[0..16384] of Byte;
+   BytesRead: Integer;
 begin
-  key := TEncoding.UTF8.GetBytes('aesEncryptionKey');
-  nonce := TEncoding.UTF8.GetBytes('123456789012');
-  associated_data := TEncoding.UTF8.GetBytes('Hello, World');
-  plaintext := TEncoding.UTF8.GetBytes('I wanna encrypt this plain text');
-  encrypted := aes128_gcm_encrypt(key, plaintext, nonce, associated_data);
-  WriteLn('Encoded message: ', BytesToHexStr(encrypted));
-  decrypted := aes128_gcm_decrypt(key, encrypted, nonce, associated_data);
-  WriteLn('Decoded message: ', TEncoding.UTF8.GetString(decrypted));
-  //EARLY SECRET = 33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a
-  TSHA256.HMACHexa(HexStrToBytes('00'), HexStrToBytes('0000000000000000000000000000000000000000000000000000000000000000'), early_secret);
-  WriteLn('Early secret: ', early_secret);
-  early_secret_bytes := HexStrToBytes(early_secret);
-  // sha256('') = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-  TSHA256.DigestBytes(TEncoding.UTF8.GetBytes(''), shakey);
-  WriteLn('SHA256(``):   ', BytesToHexStr(shakey));
-  // Preextractsec = 6f2615a108c702c5678f54fc9dbab69716c076189c48250cebeac3576c3611ba
-  res_bytes := DeriveSecret('derived', early_secret_bytes, shakey, 32);
-  WriteLn('Preextractsec:', BytesToHexStr(res_bytes));
-  // Socket connection
+  BytesRead := fprecv(Socket, @Buffer[0], num, 0);
+  SetLength(Result, BytesRead);
+  Move(Buffer[0], Result[0], BytesRead);   
+end;
+
+procedure RecvTLS(Socket: TSocket; out RecType: TRecType; out TLSRec: TBytes);
+var
+  TLSVersion, RecLenB: TBytes;
+  RecTypeB: Byte;
+  RecLen: Integer;
+begin
+  RecTypeB := RecvNumBytes(Socket, 1)[0];
+  RecType := TRecType(RecTypeB);
+  TLSVersion := RecvNumBytes(Socket, 2);
+  if (TLSVersion[0] <> LEGACY_TLS_VERSION[0]) or
+     (TLSVersion[1] <> LEGACY_TLS_VERSION[1]) then
+       raise Exception.Create('TLS version ' + BytesToHexStr(TLSVersion) + ' not supported');
+  RecLenB := RecvNumBytes(Socket, 2);
+  RecLen := WordToBE(RecLenB);
+  TLSRec := RecvNumBytes(Socket, RecLen);
+  if not Debug then Exit;
+  WriteLn('--------------------' + #13#10 + '<--Recive TLS');
+  WriteLn('Record Type: ', RecType, ' (0x', IntToHex(Byte(RecType)), ')');
+  WriteLn('Record Length: ', RecLen, ' (0x', BytesToHexStr(RecLenB),')');
+  WriteLn('Record Content: ', BytesToHexStr(TLSRec), #13#10 + '--------------------');
+end;
+
+function SendTLS(Socket: TSocket; RecType: TRecType; TLSMsg: TBytes): Boolean;
+var
+   tls_record: TBytes;
+begin
+  Result := False;
+  tls_record := [
+    Byte(RecType),
+    $03, $03,
+    Byte(Length(TLSMsg) shr 8), Byte(Length(TLSMsg) and $FF)
+  ];
+  tls_record := ConcatenateBytes(tls_record, TLSMsg);
+  if fpsend(Socket, PByte(tls_record), longword(Length(tls_record)), 0) = 0 then
+    Result := True;
+  if not Debug then Exit;
+  WriteLn('--------------------' + #13#10 + '-->Send TLS');
+  WriteLn('Record Type: ', RecType, ' (0x', IntToHex(Byte(RecType)), ')');
+  Writeln('Record Length: ' + IntToStr(Length(tls_record)) + ' (0x' + IntToHex(Length(tls_record)) + ')' + #13#10
+        + 'Record Content: ' + BytesToHexStr(tls_record) + #13#10 + '--------------------');
+end;
+
+// Socket connection to provided Host:Port
+function ConnectTLS(var CSocket: TSocket; const Host: String; const Port: Integer): Boolean;
+var
+  hrs: THostResolver;
+  IpAddress: String;
+begin
+  Result := False;
   CSocket := fpsocket(AF_INET, SOCK_STREAM, 0);
   if CSocket = -1 then
-  begin
-    WriteLn('Error creating socket.');
-    Exit;
-  end;
+    raise Exception.Create('Error creating socket.');
   hrs := THostResolver.Create(nil);
   if hrs.NameLookup(Host) then
-  begin
-    IPAddr := hrs.AddressAsString;
-    WriteLn('Resolved IP Address: ', IPAddr);
-  end
+    IpAddress := hrs.AddressAsString
   else
-  begin
-    WriteLn('Failed to resolve the hostname: ', Host);
-    Exit;
-  end;
+    raise Exception.Create('Failed to resolve the hostname: ' + Host);
   with Address do
    begin
       sin_family := AF_INET;
@@ -887,14 +1022,46 @@ begin
    end;
   hrs.Free;
   if fpconnect(CSocket, @Address, SizeOf(Address)) < 0 then
-  begin
-    WriteLn('Error connecting to server.');
-    Exit;
-  end;
-  // Create an HTTP GET request.
+    raise Exception.Create('Error connecting to server.');
+  Result := True;
+  if not Debug then Exit;
+  WriteLn('--------------------' + #13#10 + '-->Connecting to server');
+  WriteLn('Server hostname: ', Host);
+  WriteLn('Resolved IP Address: ', IpAddress);
+  WriteLn('Connected to server.');
+  WriteLn('--------------------');
+end;
+
+begin
+  Debug := True;
+  ConnectTLS(CSocket, Host, Port);
+  WriteLn('Generating params for a client hello, the first message of TLS handshake');
   request := GenClientHello(HexStrToBytes('abababababababababababababababababababababababababababababababab'),
                             HexStrToBytes('6780c5fc70275e2c7061a0e7877bb174deadeb9887027f3fa83654158ba7f50c'),
                             HexStrToBytes('3cba8c34bc35d20e81f730ac1c7bd6d661a942f90c6a9ca55c512f9e4a001266'));
-  SendCommand(CSocket, request);
+  SendTLS(CSocket, TLS_HANDSHAKE, request);
+  RecvTLS(CSocket, RecType, ServerResponce);
+  HandleServerHello(ServerResponce);
+  WriteLn('Receiving a change cipher msg, all communication will be encrypted');
+  RecvTLS(CSocket, RecType, ServerResponce);
+  WriteLn('Server change cipher ', BytesToHexStr(ServerResponce));
+  {key := TEncoding.UTF8.GetBytes('aesEncryptionKey');
+  nonce := TEncoding.UTF8.GetBytes('123456789012');
+  associated_data := TEncoding.UTF8.GetBytes('Hello, World');
+  plaintext := TEncoding.UTF8.GetBytes('I wanna encrypt this plain text');
+  encrypted := aes128_gcm_encrypt(key, plaintext, nonce, associated_data);
+  WriteLn('Encoded message: ', BytesToHexStr(encrypted));
+  decrypted := aes128_gcm_decrypt(key, encrypted, nonce, associated_data);
+  WriteLn('Decoded message: ', TEncoding.UTF8.GetString(decrypted));}
+  //EARLY SECRET = 33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a
+  TSHA256.HMACHexa(TBytes([$00]), ALL_ZERO_BYTES, early_secret);
+  WriteLn('Early secret: ', early_secret);
+  early_secret_bytes := HexStrToBytes(early_secret);
+  // sha256('') = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  TSHA256.DigestBytes(TEncoding.UTF8.GetBytes(''), shakey);
+  WriteLn('SHA256(``):   ', BytesToHexStr(shakey));
+  // Preextractsec = 6f2615a108c702c5678f54fc9dbab69716c076189c48250cebeac3576c3611ba
+  res_bytes := DeriveSecret('derived', early_secret_bytes, shakey, 32);
+  WriteLn('Preextractsec:', BytesToHexStr(res_bytes));
   CloseSocket(CSocket);
 end.
