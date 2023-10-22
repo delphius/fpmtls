@@ -19,6 +19,8 @@ uses
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
   const
     LEGACY_TLS_VERSION: array of Byte = ($03, $03);
+    host = 'localhost';
+    port = 44330;
 
   // TLS Cipher Suites
   // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4
@@ -70,10 +72,32 @@ begin
   Move(B[0], Result[Length(A)], Length(B));
 end;
 
+function SeqNumToBytes(seq: UInt32): TBytes;
+var
+  i: Integer;
+begin
+  SetLength(Result, 12);
+  FillByte(Result[0], 8, 0);
+  for i := 0 to 3 do
+    Result[i + 8] := Byte((seq shr (8 * (3 - i))) and $FF);
+end;
+
+function XorBytes(a, b: TBytes): TBytes;
+var
+  i: Integer;
+begin
+  SetLength(Result, Length(a));
+
+  for i := 0 to High(a) do
+  begin
+    Result[i] := a[i] xor b[i];
+  end;
+end;
+
 //**SYMMETRIC CIPHERS
 //  CHACHA20 + POLY1305
 
-
+{TO DO}
 
 // AES 128 + EXPAND KEYS
 const  
@@ -209,8 +233,6 @@ begin
         //WriteLn(BytesToHexStr(UInt32ToBytesBE(State[i], 4)));
         //WriteLn(BytesToHexStr(Result));
       end;
-      
-
 end;
 
 //  AES COUNTER MODE
@@ -435,6 +457,23 @@ begin
   for i := 0 to Length(tag) - 1 do
     res[Length(encrypted_msg) + i] := tag[i];
   Result := res;
+end;
+
+function do_authenticated_encryption(key, nonce_base: TBytes; seq_num: integer; msg_type, payload: TBytes): TBytes;
+const
+  TAG_LEN = 16;
+var
+  nonce, seq_num_bytes, data: TBytes;
+begin
+  payload := ConcatenateBytes(payload, msg_type);
+  seq_num_bytes := SeqNumToBytes(seq_num);
+  nonce := XorBytes(nonce_base, seq_num_bytes);
+  data := [
+    $17, //APPLICATION_DATA
+    $03, $03, //LEGACY_TLS_VERSION
+    Byte((Length(payload) + TAG_LEN) shr 8), Byte((Length(payload) + TAG_LEN) and $FF)
+  ];
+  Result := aes128_gcm_encrypt(key, payload, nonce, data);
 end;
 
 //**ELLIPTIC CURVE FUNCTIONS
@@ -667,7 +706,7 @@ begin
     Result[i] := secret[i];
 end;
 
-function GenClientHello(clientRandom, ecdhPubKeyX, ecdhPubKeyY: TBytes): TBytes;
+function GenClientHello(clientRandom, ecdhPubKeyX: TBytes): TBytes;
 const
   CLIENT_HELLO: TBytes = ($01);
   TLS_AES_128_GCM_SHA256: TBytes = ($13, $01);
@@ -829,21 +868,45 @@ begin
   Writeln('Client Hello TLV len: ', Length(clientHelloTLV));
 end;
 
+function HandleFinished(Finished, Key, Msgs: TBytes): Boolean;
+  var verify_data_len, i: Integer;
+      verify_data, shaMsgs: TBytes;
+      hmac_digest: String;
+      hmac_digest_bytes: TBytes;
+begin
+  if Finished[0] <> $14
+    then raise Exception.Create('Handshake type is not FINISHED (0x14)');
+  verify_data_len := Finished[1] shl 16 or Finished[2] shl 8 or Finished[3];
+  SetLength(verify_data, verify_data_len);
+  Move(Finished[4], verify_data[0], verify_data_len);
+  TSHA256.DigestBytes(Msgs, shaMsgs);
+  TSHA256.HMACHexa(Key, shaMsgs, hmac_digest);
+  hmac_digest_bytes := HexStrToBytes(hmac_digest);
+  Result := True;
+  for i := 0 to Length(verify_data) - 1 do
+    if verify_data[i] <> hmac_digest_bytes[i] then
+    begin
+      Result := False;
+      Break;
+    end;
+  if not Debug then Exit;
+  WriteLn('<--Parse server Finish');
+  WriteLn('Server Finished length: ', Length(Finished));
+  WriteLn('Verify data Length: ', verify_data_len);
+  WriteLn('Server Finish Content: ', BytesToHexStr(verify_data), #13#10 + '--------------------');
+end;
+
 function HandleServerHello(serverHello: TBytes): TBytes;
 var
-  //handshakeType: Byte;
-  //SERVER_HELLO: Byte;
   serverHelloLen, serverVersion, serverRandom, sessionID, cipherSuite, extensions: TBytes;
   sessionIDLen, compressionMethod: Byte;
   publicECKey: TBytes;
-  ptr, extensionType, {group,} keyExchangeLen: Integer;
-  {SECP256R1_GROUP,} KEY_SHARE: Byte;
-  {publicECKeyX, publicECKeyY,} extensionLength, extensionsLength: UInt32;
+  ptr, extensionType, keyExchangeLen: Integer;
+  KEY_SHARE: Byte;
+  extensionLength, extensionsLength: UInt32;
 begin
   if Debug then WriteLn('--------------------' + #13#10 + '<--Parse server Hello');
   if Debug then WriteLn('Server Hello length: ', Length(serverHello));
-  //SERVER_HELLO := $02;
-  //SECP256R1_GROUP := $17;
   KEY_SHARE := $33;
 
   // Initialize variables
@@ -851,9 +914,6 @@ begin
   publicECKey := nil;
 
   // Extract data from the server hello message
-  //handshakeType := serverHello[0];
-  //Assert(handshakeType = SERVER_HELLO);
-
   serverHelloLen := Copy(serverHello, 1, 3);
   serverVersion := Copy(serverHello, 4, 2);
   serverRandom := Copy(serverHello, 6, 32);
@@ -862,7 +922,6 @@ begin
   sessionID := Copy(serverHello, 39, sessionIDLen);
 
   cipherSuite := Copy(serverHello, 39 + sessionIDLen, 2);
-  //Assert(cipherSuite = TLS_AES_128_GCM_SHA256);
 
   compressionMethod := serverHello[39 + sessionIDLen + 2];
 
@@ -880,11 +939,7 @@ begin
       Inc(ptr, extensionLength + 4);
       Continue;
     end;
-    //group := (extensions[ptr + 4] shl 8) or extensions[ptr + 5];
-    //Assert(group = SECP256R1_GROUP);
-    //WriteLn(IntToHex(group));
     keyExchangeLen := (extensions[ptr + 6] shl 8) or extensions[ptr + 7];
-    //WriteLn(keyExchangeLen);
     publicECKey := Copy(extensions, ptr + 8, keyExchangeLen);
     Break;
   end;
@@ -892,12 +947,8 @@ begin
   if Length(publicECKey) = 0 then
     raise Exception.Create('No public ECDH key in server hello');
 
-  //publicECKeyX := (publicECKey[1] shl 24) or (publicECKey[2] shl 16) or (publicECKey[3] shl 8) or publicECKey[4];
-  //publicECKeyY := (publicECKey[33] shl 24) or (publicECKey[34] shl 16) or (publicECKey[35] shl 8) or publicECKey[36];
-
   // Return extracted data
-  SetLength(Result, 32);  // 32 (serverRandom) + 65 (publicECKeyXY)
-  //Move(serverRandom[0], Result[0], 32);
+  SetLength(Result, 32);
   Move(publicECKey[0], Result[0], 32);
   if not Debug then Exit;
   WriteLn('Type is the server hello: ', serverHello[0].ToHexString);
@@ -929,7 +980,7 @@ type
 
 var
   shakey, early_secret_bytes, handshake_secret_bytes, res_bytes: TBytes;
-  early_secret,handshake_secret :String;
+  early_secret,handshake_secret, client_finish_val :String;
   CSocket: TSocket;
   Address: TInetSockAddr;
   request,ServerResponce, hello_hash: TBytes;
@@ -939,11 +990,10 @@ var
   client_hs_secret, client_write_key, client_write_iv, client_finished_key: TBytes;
   client_seq_num, server_seq_num: Integer;
   rec_type: Byte;
-  encrypted_extentions: TBytes;
+  encrypted_extentions, server_cert, cert_verify, finished, client_finish_val_bytes, msgs_so_far,
+  msgs_sha256, handshake_msg, encrypted_handshake_msg: TBytes;
   RecType: TRecType;
 const
-  host = 'localhost';
-  port = 44330;
   ZERO_BYTES_32: TBytes = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
   PrivateKey: TBytes = (
     $77, $07, $6D, $0A, $73, $18, $A5, $7D,
@@ -1004,80 +1054,29 @@ begin
         + 'Record Content: ' + BytesToHexStr(tls_record) + #13#10 + '--------------------');
 end;
 
-function SeqNumToBytes(seq: UInt32): TBytes;
-var
-  i: Integer;
-begin
-  SetLength(Result, 12);
-  FillByte(Result[0], 8, 0);
-  for i := 0 to 3 do
-    Result[i + 8] := Byte((seq shr (8 * (3 - i))) and $FF);
-  Write('ntb: ');
-  for i := 0 to High(Result) do
-  begin
-    Write(IntToHex(Result[i], 2));
-  end;
-  WriteLn;
-end;
-
-function XorBytes(a, b: TBytes): TBytes;
-var
-  i: Integer;
-begin
-  SetLength(Result, Length(a));
-
-  for i := 0 to High(a) do
-  begin
-    Result[i] := a[i] xor b[i];
-  end;
-
-  Write('xor: ');
-  for i := 0 to High(Result) do
-  begin
-    Write(IntToHex(Result[i], 2));
-  end;
-  WriteLn;
-end;
-
 procedure RecvTLSandDecrypt(Socket: TSocket; const key, nonce: TBytes; seq_num: integer; out rec_type: byte; out TLSRec: TBytes);
 var RecType: TRecType;
-    TLSEncRec :TBytes;
+    TLSEncRec, TLSDecRec :TBytes;
     seq_num_bytes, xor_nonce: TBytes;
     data: TBytes;
+
 begin
   RecvTLS(Socket, RecType, TLSEncRec);
-  WriteLn('rec: ', BytesToHexStr(TLSEncRec));
   if RecType <> TLS_APPLICATION_DATA
     then raise Exception.Create('TLS record type is not TLS_APPLICATION_DATA');
-  WriteLn('nnc: ', BytesToHexStr(nonce));
   seq_num_bytes := SeqNumToBytes(seq_num);
   xor_nonce := XorBytes(nonce, seq_num_bytes);
-  //  data = APPLICATION_DATA + LEGACY_TLS_VERSION + num_to_bytes(len(TLSEncRec), 2)
   data := [
     $17, //APPLICATION_DATA
     $03, $03, //LEGACY_TLS_VERSION
     Byte(Length(TLSEncRec) shr 8), Byte(Length(TLSEncRec) and $FF)
   ];
-  WriteLn('dta: ', BytesToHexStr(data));
-  TLSRec := aes128_gcm_decrypt(key, TLSEncRec, xor_nonce, data);
+  TLSDecRec := aes128_gcm_decrypt(key, TLSEncRec, xor_nonce, data);
+  WriteLn(BytesToHexStr(TLSDecRec));
+  rec_type := TLSDecRec[Length(TLSDecRec) - 1];
+  SetLength(TLSRec, Length(TLSDecRec) - 1);
+  Move(TLSDecRec[0], TLSRec[0], Length(TLSDecRec) - 1);
 end;
-
-{def do_authenticated_decryption(key, nonce_start, seq_num, msg_type, payload):
-    nonce = xor(nonce_start, num_to_bytes(seq_num, 12))
-
-    data = msg_type + LEGACY_TLS_VERSION + num_to_bytes(len(payload), 2)
-    msg = aes128_gcm_decrypt(key, payload, nonce, associated_data=data)
-
-    msg_type, msg_data = msg[-1:], msg[:-1]
-    return msg_type, msg_data}
-
-{def recv_tls_and_decrypt(s, key, nonce, seq_num):
-    rec_type, encrypted_msg = recv_tls(s)
-    assert rec_type == APPLICATION_DATA
-
-    msg_type, msg = do_authenticated_decryption(key, nonce, seq_num, APPLICATION_DATA, encrypted_msg)
-    return msg_type, msg}
-
 
 // Socket connection to provided Host:Port
 function ConnectTLS(var CSocket: TSocket; const Host: String; const Port: Integer): Boolean;
@@ -1117,12 +1116,10 @@ begin
   ConnectTLS(CSocket, Host, Port);
   WriteLn('Generating params for a client hello, the first message of TLS handshake');
   SetLength(PublicKey,32);
-  CryptoScalarmultBase(@PublicKey[0], @PrivateKey);
+  CryptoScalarmultBase(@PublicKey[0], @PrivateKey[0]);
   WriteLn('Our curve25519 private key: ', BytesToHexStr(PrivateKey));
   WriteLn('Our curve25519 public key: ', BytesToHexStr(PublicKey));
-  request := GenClientHello(HexStrToBytes('abababababababababababababababababababababababababababababababab'),
-                            HexStrToBytes('8520F0098930A754748B7DDCB43EF75A0DBF3A0D26381AF4EBA4A98EAA9B4E6A'),
-                            HexStrToBytes('3cba8c34bc35d20e81f730ac1c7bd6d661a942f90c6a9ca55c512f9e4a001266'));
+  request := GenClientHello(HexStrToBytes('abababababababababababababababababababababababababababababababab'), PublicKey);
   SendTLS(CSocket, TLS_HANDSHAKE, request);
   RecvTLS(CSocket, RecType, ServerResponce);
   ClientHello := request;
@@ -1176,6 +1173,54 @@ begin
   WriteLn('--------------------');
   WriteLn('Receiving encrypted extensions');
   RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, encrypted_extentions);
-  WriteLn(BytesToHexStr(encrypted_extentions));
+  WriteLn('Encrypted extensions: ',BytesToHexStr(encrypted_extentions), ', parsing skipped');
+
+  msgs_so_far := ConcatenateBytes(ClientServerHello, encrypted_extentions);
+  server_seq_num += 1;
+  
+  WriteLn('--------------------');
+  WriteLn('Receiving server certificates');
+  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, server_cert);
+  WriteLn('Got ',Length(server_cert), ' bytes of certs, parsing skipped');
+
+  msgs_so_far := ConcatenateBytes(msgs_so_far, server_cert);
+  server_seq_num += 1;
+
+  WriteLn('--------------------');
+  WriteLn('Receiving server verify certificate');
+  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, cert_verify);
+  WriteLn('Got ',Length(cert_verify), ' bytes of verify cert, parsing skipped');
+  WriteLn('Certificate verifying skipped');
+  
+  msgs_so_far := ConcatenateBytes(msgs_so_far, cert_verify);
+  server_seq_num += 1;
+
+  WriteLn('--------------------');
+  WriteLn('Receiving server finished');
+  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, finished);
+  if HandleFinished(finished, server_finished_key, msgs_so_far)
+    then WriteLn('Server sent VALID finish handshake msg')
+    else WriteLn('Warning: Server sent WRONG handshake finished msg');
+  
+  WriteLn('--------------------');
+  WriteLn('Handshake: sending a change cipher msg');
+  SendTLS(CSocket, TLS_CHANGE_CIPHER, TBytes([$01]));
+
+  //All client messages beyond this point are encrypted
+  msgs_so_far := ConcatenateBytes(msgs_so_far, finished);
+  TSHA256.DigestBytes(msgs_so_far, msgs_sha256);
+  TSHA256.HMACHexa(client_finished_key, msgs_sha256, client_finish_val);
+  client_finish_val_bytes := HexStrToBytes(client_finish_val);
+
+  WriteLn('Handshake: sending an encrypted finished msg');
+  WriteLn('Client finish value: ', client_finish_val);
+  handshake_msg := [
+    $14, //FINISHED
+    Byte(Length(client_finish_val_bytes) shr 16), Byte(Length(client_finish_val_bytes) shr 8), Byte(Length(client_finish_val_bytes) and $FF)
+  ];
+  encrypted_handshake_msg := do_authenticated_encryption(client_write_key, client_write_iv, client_seq_num,
+                                                         TBytes([$16]),
+                                                         ConcatenateBytes(handshake_msg, client_finish_val_bytes));
+  SendTLS(CSocket, TLS_APPLICATION_DATA, encrypted_handshake_msg);
   CloseSocket(CSocket);
 end.
