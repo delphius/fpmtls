@@ -10,7 +10,7 @@ program fptls;
 }
 {$mode objfpc}{$H+}
 uses
-  sysutils, fpsha256, fphashutils, sockets, resolve;
+  sysutils, fpsha256, fphashutils, sockets, resolve, fpecc;
 
   var
    Debug: Boolean;
@@ -19,8 +19,9 @@ uses
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
   const
     LEGACY_TLS_VERSION: array of Byte = ($03, $03);
-    host = 'localhost';
-    port = 44330;
+    REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: www.freepascal.org'+#13#10+'Connection: close'+#13#10#13#10;
+    host = 'www.freepascal.org';
+    port = 443;
 
   // TLS Cipher Suites
   // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4
@@ -980,7 +981,7 @@ type
 
 var
   shakey, early_secret_bytes, handshake_secret_bytes, res_bytes: TBytes;
-  early_secret,handshake_secret, client_finish_val :String;
+  early_secret,handshake_secret, client_finish_val, master_secret :String;
   CSocket: TSocket;
   Address: TInetSockAddr;
   request,ServerResponce, hello_hash: TBytes;
@@ -992,6 +993,9 @@ var
   rec_type: Byte;
   encrypted_extentions, server_cert, cert_verify, finished, client_finish_val_bytes, msgs_so_far,
   msgs_sha256, handshake_msg, encrypted_handshake_msg: TBytes;
+  msgs_so_far_hash, premaster_secret, master_secret_bytes: TBytes;
+  server_secret, client_secret: TBytes;
+  encrypted_msg, decrypted_msg: TBytes;
   RecType: TRecType;
 const
   ZERO_BYTES_32: TBytes = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
@@ -1004,7 +1008,7 @@ const
 
 function RecvNumBytes(Socket: TSocket; num: Integer): TBytes;
   var
-   Buffer: array[0..16384] of Byte;
+   Buffer: array[0..65535] of Byte;
    BytesRead: Integer;
 begin
   BytesRead := fprecv(Socket, @Buffer[0], num, 0);
@@ -1072,7 +1076,6 @@ begin
     Byte(Length(TLSEncRec) shr 8), Byte(Length(TLSEncRec) and $FF)
   ];
   TLSDecRec := aes128_gcm_decrypt(key, TLSEncRec, xor_nonce, data);
-  WriteLn(BytesToHexStr(TLSDecRec));
   rec_type := TLSDecRec[Length(TLSDecRec) - 1];
   SetLength(TLSRec, Length(TLSDecRec) - 1);
   Move(TLSDecRec[0], TLSRec[0], Length(TLSDecRec) - 1);
@@ -1222,5 +1225,59 @@ begin
                                                          TBytes([$16]),
                                                          ConcatenateBytes(handshake_msg, client_finish_val_bytes));
   SendTLS(CSocket, TLS_APPLICATION_DATA, encrypted_handshake_msg);
+
+  client_seq_num += 1;
+  WriteLn('Handshake finished, regenerating secrets for application data');
+
+  //  Rederive application secrets
+  TSHA256.DigestBytes(msgs_so_far , msgs_so_far_hash);
+  premaster_secret := DeriveSecret('derived', handshake_secret_bytes, shakey, 32);
+  TSHA256.HMACHexa(premaster_secret, ZERO_BYTES_32, master_secret);
+  master_secret_bytes := HexStrToBytes(master_secret);
+
+  server_secret := DeriveSecret('s ap traffic', master_secret_bytes, msgs_so_far_hash, 32);
+  server_write_key := DeriveSecret('key', server_secret,  TEncoding.UTF8.GetBytes(''), 16);
+  server_write_iv := DeriveSecret('iv', server_secret,  TEncoding.UTF8.GetBytes(''), 12);
+  client_secret := DeriveSecret('c ap traffic', master_secret_bytes, msgs_so_far_hash, 32);
+  client_write_key := DeriveSecret('key', client_secret,  TEncoding.UTF8.GetBytes(''), 16);
+  client_write_iv := DeriveSecret('iv', client_secret,  TEncoding.UTF8.GetBytes(''), 12);
+
+  WriteLn('server_write_key: ', BytesToHexStr(server_write_key), ' server_write_iv: ', BytesToHexStr(server_write_iv));
+  WriteLn('client_write_key: ', BytesToHexStr(client_write_key), ' client_write_iv: ', BytesToHexStr(client_write_iv));
+
+  //  Reset sequence numbers
+  client_seq_num := 0;
+  server_seq_num := 0;
+  
+  // TLS traffic exchange start from here
+  WriteLn('--------------------');
+  WriteLn('Request: ', REQUESTS);
+  
+  encrypted_msg := do_authenticated_encryption(client_write_key, client_write_iv, client_seq_num,
+                                               TBytes([$17]),
+                                               TEncoding.UTF8.GetBytes(REQUESTS));
+  WriteLn(BytesToHexStr(TEncoding.UTF8.GetBytes(REQUESTS)));
+  WriteLn(Length(encrypted_msg));
+  SendTLS(CSocket, TLS_APPLICATION_DATA, encrypted_msg);
+  client_seq_num += 1;
+
+  WriteLn('Receiving an answer'); 
+    while True do
+      begin
+        RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, decrypted_msg);
+        server_seq_num += 1;
+        case rec_type of
+          Byte(TLS_APPLICATION_DATA): WriteLn(BytesToStr(decrypted_msg));
+          Byte(TLS_HANDSHAKE):        if decrypted_msg[0] = 4
+                                         then WriteLn('New session ticket: ', BytesToHexStr(decrypted_msg));
+          Byte(TLS_ALERT):
+            begin
+              WriteLn('Got alert level: 0x', BytesToHexStr(decrypted_msg));
+              Break;
+            end;
+          else WriteLn ('Got msg with unknown rec_type', rec_type); 
+          end;
+      end;
+  
   CloseSocket(CSocket);
 end.
