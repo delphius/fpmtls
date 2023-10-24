@@ -721,6 +721,18 @@ var
 begin
   sessionID := [$00];
   compressionMethod := [$00]; // no compression
+
+  // Server Name Extention
+  serverName := TEncoding.UTF8.GetBytes(host);
+  serverNameExtention := [$00, $00, // assigned value for extension "server name"
+                          Byte((Length(serverName) + 5) shr 8), Byte((Length(serverName) + 5) and $FF), // bytes of "server name" extension data follows
+                          Byte((Length(serverName) + 3) shr 8), Byte((Length(serverName) + 3) and $FF), // bytes of first (and only) list entry follows
+                          $00, //  list entry is type 0x00 "DNS hostname"
+                          Byte(Length(serverName) shr 8), Byte(Length(serverName) and $FF) //bytes of hostname follows
+                         ];
+  serverNameExtention := ConcatenateBytes(serverNameExtention, serverName);
+  WriteLn('SNI: ', BytesToHexStr(serverNameExtention));
+  
   supportedVersions := [$00, $2B];
   supportedVersionsLength := [$00, $03];
   anotherSupportedVersionsLength := [$02];
@@ -793,9 +805,11 @@ begin
   Inc(i, Length(keyExchangeLen));
   Move(ecdhPubKey[0], keyShareExtension[i], Length(ecdhPubKey));
 
-  SetLength(extensions, Length(supportedVersionExtension) + Length(signatureAlgosExtension) +
+  SetLength(extensions, Length(serverNameExtention) + Length(supportedVersionExtension) + Length(signatureAlgosExtension) +
     Length(supportedGroupsExtension) + Length(keyShareExtension));
   i := 0;
+  Move(serverNameExtention[0], extensions[i], Length(serverNameExtention));
+  Inc(i, Length(serverNameExtention));
   Move(supportedVersionExtension[0], extensions[i], Length(supportedVersionExtension));
   Inc(i, Length(supportedVersionExtension));
   Move(signatureAlgosExtension[0], extensions[i], Length(signatureAlgosExtension));
