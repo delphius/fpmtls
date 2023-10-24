@@ -6,5 +6,7 @@ Its insecure buggy PoC (proof of concept) implementation not for production, onl
 Set of cryptoprimitives used:
 1. AES 128 GCM
 2. curve25519
-3. SHA256
-4. HMAC
+
+Hashing functions:
+1. SHA256
+2. HMAC
