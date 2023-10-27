@@ -716,7 +716,7 @@ var
   tls13Version, supportedVersionExtension, signatureAlgos, signatureAlgosLength, anotherSignatureAlgosLength, rsaPssRsaeSha256Algo,
   signatureAlgosExtension, supportedGroups, supportedGroupsLength, anotherSupportedGroupsLength, secp256r1Group, supportedGroupsExtension,
   ecdhPubKey, keyShare, keyShareLength, anotherKeyShareLength, keyExchangeLen, keyShareExtension, extensions, clientHelloData,
-  clientHelloLenBytes, clientHelloTLV: TBytes;
+  clientHelloLenBytes, clientHelloTLV, serverName, serverNameExtention: TBytes;
   i: Integer;
 begin
   sessionID := [$00];
