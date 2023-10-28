@@ -54,7 +54,7 @@ var
 begin
   Result := nil;
   SetLength(Result, bytes_len);
-  for i := 0 to bytes_len - 1 do
+  for i := 0 to Integer(bytes_len - 1) do
     Result[i] := Byte((num shr (8 * (bytes_len - 1 - i))) and $FF);
 end;
 // Converts an unsigned 64-bit integer (UInt64) to an array of bytes with length of 8 bytes (64 bit).
@@ -75,7 +75,7 @@ begin
   if Length(A) > 0 then Move(A[0], Result[0], Length(A));
   if Length(B) > 0 then Move(B[0], Result[Length(A)], Length(B));
 end;
-
+// Makes 12 bytes TBytes array (nonce) from UInt32.
 function SeqNumToBytes(seq: UInt32): TBytes;
 var
   i: Integer;
@@ -86,7 +86,7 @@ begin
   for i := 0 to 3 do
     Result[i + 8] := Byte((seq shr (8 * (3 - i))) and $FF);
 end;
-
+// XOR 2 Bytes arrays and returs the result TBytes array
 function XorBytes(a, b: TBytes): TBytes;
 var
   i: Integer;
@@ -152,9 +152,7 @@ begin
 
   for i := 0 to 3 do
       begin
-        //WriteLn(BytesToHexStr(Copy(key, i * 4, 4)));
         enc_keys[0][i] := LongWordToBE(PByte(Copy(key, i * 4, 4)));
-        //WriteLn(BytesToHexStr(UInt32ToBytesBE(enc_keys[0][i],4)));
       end;
   for t := 1 to AES_ROUNDS do
   begin
@@ -230,13 +228,11 @@ begin
     for i:=0 to 3 do
       State[i]:=State[i] xor enc_keys[Round][i];
    end;
+  Result := nil;
   SetLength(Result, 16);
   for i := 0 to 3 do
       begin
         Move(State[i], Result[i * 4], 4);
-        //WriteLn(State[i]);
-        //WriteLn(BytesToHexStr(UInt32ToBytesBE(State[i], 4)));
-        //WriteLn(BytesToHexStr(Result));
       end;
 end;
 
@@ -250,6 +246,7 @@ var
   s, i: Integer;
   chunk, chunk_nonce, encrypted_chunk_nonce, decrypted_chunk: TBytes;
 begin
+  Ans := nil;
   SetLength(ans, 0);
   counter := counter_start_val;
   s := 0;
@@ -271,12 +268,12 @@ begin
     Move(UInt32ToBytesBE(counter, 4)[0], chunk_nonce[Length(nonce)], 4);
     encrypted_chunk_nonce := AES128Encrypt(key, chunk_nonce);
     SetLength(decrypted_chunk, Length(chunk));
-    for i := 0 to High(chunk) do
+    for i := 0 to Byte(High(chunk)) do
       decrypted_chunk[i] := chunk[i] xor encrypted_chunk_nonce[i];
     SetLength(Ans, Length(Ans) + Length(decrypted_chunk));
     Move(decrypted_chunk[0], Ans[Length(Ans) - Length(decrypted_chunk)], Length(decrypted_chunk));
-    counter := counter + 1;
-    s := s + BLOCK_SIZE;
+    Inc(counter);
+    s := Integer(s + BLOCK_SIZE);
   end;
 end;
 
@@ -371,21 +368,21 @@ begin
  M:=XSize div 16;
  if M < 1 then M := 1;
  XPos:=X;
- for I := 0 to M - 1 do
+ for I := 0 to Integer(M - 1) do
   begin
    GCMXORBlock(Y,XPos);
    Inc(XPos,AES_BLOCK_SIZE);
    GCMGFMult(Y,H,@Temp);
-   System.Move(Temp,Y^,AES_BLOCK_SIZE);
+   Move(Temp,Y^,AES_BLOCK_SIZE);
   end;
  if (PtrUInt(X) + XSize) > PtrUInt(XPos) then
   begin
    Last:=(PtrUInt(X) + XSize) - PtrUInt(XPos);
-   System.Move(XPos^,Temp,Last);
-   FillChar(Pointer(PtrUInt(@Temp) + Last)^,AES_BLOCK_SIZE - Last,0);
+   Move(XPos^,Temp,SizeInt(Last));
+   FillChar(Pointer(PtrUInt(@Temp) + Last)^,SizeInt(AES_BLOCK_SIZE - Last),0);
    GCMXORBlock(Y,@Temp);
    GCMGFMult(Y,H,@Temp);
-   System.Move(Temp,Y^,AES_BLOCK_SIZE);
+   Move(Temp,Y^,AES_BLOCK_SIZE);
   end;
 end;
 
@@ -394,10 +391,10 @@ function calc_pretag(key: TBytes; encrypted_msg, associated_data: TBytes): TByte
 const
   BLOCK_SIZE = 16;
 var
-  v: TBytes = nil;
-  u: TBytes = nil;
-  h: TBytes = nil;
-  data: TBytes = nil;
+  v: TBytes = ();
+  u: TBytes = ();
+  h: TBytes = ();
+  data: TBytes = ();
 begin
   SetLength(v, BLOCK_SIZE * ((Length(associated_data) + BLOCK_SIZE - 1) div BLOCK_SIZE) - Length(associated_data));
   SetLength(u, BLOCK_SIZE * ((Length(encrypted_msg) + BLOCK_SIZE - 1) div BLOCK_SIZE) - Length(encrypted_msg));
@@ -406,12 +403,13 @@ begin
   Move(associated_data[0], data[0], Length(associated_data));
   Move(v[0], data[Length(associated_data)], Length(v));
   Move(encrypted_msg[0], data[Length(associated_data) + Length(v)], Length(encrypted_msg));
+  WriteLn('LENGTH U: ', Length(u));
   Move(u[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg)], Length(u));
-  Move(UInt64ToBytesBE(Length(associated_data) * 8)[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg) + Length(u)], 8);
-  Move(UInt64ToBytesBE(Length(encrypted_msg) * 8)[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg) + Length(u) + 8], 8);
+  Move(UInt64ToBytesBE(UInt64(Length(associated_data) * 8))[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg) + Length(u)], 8);
+  Move(UInt64ToBytesBE(UInt64(Length(encrypted_msg) * 8))[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg) + Length(u) + 8], 8);
   Result := nil;
   SetLength(Result, 16);
-  GCMGHash(PByte(h), PByte(data), Length(data), PByte(Result));
+  GCMGHash(PByte(h), PByte(data), PtrUInt(Length(data)), PByte(Result));
 end;
 
 function aes128_gcm_decrypt(key, msg, nonce, associated_data: TBytes): TBytes;
@@ -425,7 +423,7 @@ var
 begin
   SetLength(encrypted_msg, Length(msg) - TAG_LEN);
   SetLength(tag, TAG_LEN);
-  for i := 0 to Length(encrypted_msg) - 1 do
+  for i := 0 to Integer(Length(encrypted_msg) - 1) do
     encrypted_msg[i] := msg[i];
   for i := 0 to TAG_LEN - 1 do
     tag[i] := msg[Length(msg) - TAG_LEN + i];
@@ -460,14 +458,14 @@ begin
   pretag := calc_pretag(key, encrypted_msg, associated_data);
   tag := aes128_ctr_encrypt(key, pretag, nonce, COUNTER_START_VAL1);
   SetLength(res, Length(encrypted_msg) + Length(tag));
-  for i := 0 to Length(encrypted_msg) - 1 do
+  for i := 0 to Integer(Length(encrypted_msg) - 1) do
     res[i] := encrypted_msg[i];
-  for i := 0 to Length(tag) - 1 do
+  for i := 0 to Integer(Length(tag) - 1) do
     res[Length(encrypted_msg) + i] := tag[i];
   Result := res;
 end;
 
-function do_authenticated_encryption(key, nonce_base: TBytes; seq_num: integer; msg_type, payload: TBytes): TBytes;
+function do_authenticated_encryption(key, nonce_base: TBytes; seq_num: UInt32; msg_type, payload: TBytes): TBytes;
 const
   TAG_LEN = 16;
 var
@@ -539,9 +537,9 @@ begin
       m[i - 1] := m[i - 1] and $FFFF;
     end;
     m[15] := n^[15] - $7FFF - ((m[14] shr 16) and 1);
-    b := (m[15] shr 16) and 1;
+    b := Integer((m[15] shr 16) and 1);
     m[14] := m[14] and $FFFF;
-    Sel25519(n, @m, 1-b);
+    Sel25519(n, @m, Integer(1-b));
   end;
   for i := 0 to 15 do
   begin
@@ -623,7 +621,7 @@ const
 begin
   for i := 0 to 30 do
     z[i] := n[i];
-  z[31] := (n[31] and 127) or 64;
+  z[31] := Byte((n[31] and 127) or 64);
   z[0] := z[0] and $F8;
   Unpack25519(@x, p);
   for i := 0 to 15 do
@@ -638,7 +636,7 @@ begin
  
   for i := 254 downto 0 do
   begin
-    r := (z[i shr 3] shr (i and 7)) and 1;
+    r := Integer((z[i shr 3] shr (i and 7)) and 1);
     Sel25519(@a, @b, r);
     Sel25519(@c, @d, r);
     AA(@e, @a, @c);
@@ -687,16 +685,16 @@ begin
   SetLength(fullLabel, Length(lbel) + 6);
   for i := 0 to 5 do
     fullLabel[i] := TLS13_LABEL_PREFIX[i];
-  for i := 0 to Length(lbel) - 1 do
+  for i := 0 to Integer(Length(lbel) - 1) do
     fullLabel[i + 6] := lbel[i];
   SetLength(packedData, 2 + 1 + Length(fullLabel) + 1 + Length(data));
   packedData[0] := Byte(hashLen shr 8);
   packedData[1] := Byte(hashLen);
   packedData[2] := Byte(Length(fullLabel));
-  for i := 0 to Length(fullLabel) - 1 do
+  for i := 0 to Integer(Length(fullLabel) - 1) do
     packedData[i + 3] := fullLabel[i];
   packedData[3 + Length(fullLabel)] := Byte(Length(data));
-  for i := 0 to Length(data) - 1 do
+  for i := 0 to Integer(Length(data) - 1) do
     packedData[i + 4 + Length(fullLabel)] := data[i];
   SetLength(secret, 0);
   sum := packedData;
@@ -709,8 +707,9 @@ begin
     secret := HexStrToBytes(secret_str);
     Inc(i);
   end;
+  Result := nil;
   SetLength(Result, hashLen);
-  for i := 0 to hashLen - 1 do
+  for i := 0 to Integer(hashLen - 1) do
     Result[i] := secret[i];
 end;
 
@@ -793,9 +792,9 @@ begin
   Move(ecdhPubKeyX[0], ecdhPubKey[0], Length(ecdhPubKeyX));
 
   keyShare := [$00, $33];
-  keyShareLength := UInt32ToBytesBE(Length(ecdhPubKey) + 4 + 2, 2);
-  anotherKeyShareLength := UInt32ToBytesBE(Length(ecdhPubKey) + 4, 2);
-  keyExchangeLen := UInt32ToBytesBE(Length(ecdhPubKey), 2);
+  keyShareLength := UInt32ToBytesBE(UInt32(Length(ecdhPubKey) + 4 + 2), 2);
+  anotherKeyShareLength := UInt32ToBytesBE(UInt32(Length(ecdhPubKey) + 4), 2);
+  keyExchangeLen := UInt32ToBytesBE(UInt32(Length(ecdhPubKey)), 2);
   SetLength(keyShareExtension, Length(keyShare) + Length(keyShareLength) +
     Length(anotherKeyShareLength) + Length(secp256r1Group) + Length(keyExchangeLen) +
     Length(ecdhPubKey));
@@ -835,19 +834,19 @@ begin
   Inc(i, Length(clientRandom));
   Move(sessionID[0], clientHelloData[i], Length(sessionID));
   Inc(i, Length(sessionID));
-  Move(UInt32ToBytesBE(Length(TLS_AES_128_GCM_SHA256), 2)[0], clientHelloData[i], 2);
+  Move(UInt32ToBytesBE(UInt32(Length(TLS_AES_128_GCM_SHA256)), 2)[0], clientHelloData[i], 2);
   Inc(i, 2);
   Move(TLS_AES_128_GCM_SHA256[0], clientHelloData[i], Length(TLS_AES_128_GCM_SHA256));
   Inc(i, Length(TLS_AES_128_GCM_SHA256));
-  Move(UInt32ToBytesBE(Length(compressionMethod), 1)[0], clientHelloData[i], 1);
+  Move(UInt32ToBytesBE(UInt32(Length(compressionMethod)), 1)[0], clientHelloData[i], 1);
   Inc(i, 2);
   Move(compressionMethod[0], clientHelloData[i], Length(compressionMethod));
   Inc(i, Length(compressionMethod));
-  Move(UInt32ToBytesBE(Length(extensions), 1)[0], clientHelloData[i], 1);
+  Move(UInt32ToBytesBE(UInt32(Length(extensions)), 1)[0], clientHelloData[i], 1);
   Inc(i, 1);
   Move(extensions[0], clientHelloData[i], Length(extensions));
 
-  clientHelloLenBytes := UInt32ToBytesBE(Length(clientHelloData), 3);
+  clientHelloLenBytes := UInt32ToBytesBE(UInt32(Length(clientHelloData)), 3);
   SetLength(clientHelloTLV, Length(CLIENT_HELLO) + Length(clientHelloLenBytes) +
     Length(clientHelloData));
   i := 0;
@@ -864,11 +863,11 @@ begin
   Writeln('Client random: ', BytesToHexStr(clientRandom));
   Writeln('Session id len is 0: ', BytesToHexStr(sessionID));
   Writeln('Session id: ', BytesToHexStr(sessionID));
-  Writeln('Cipher suites len is 2: ', BytesToHexStr(UInt32ToBytesBE(Length(TLS_AES_128_GCM_SHA256), 2)));
+  Writeln('Cipher suites len is 2: ', BytesToHexStr(UInt32ToBytesBE(UInt32(Length(TLS_AES_128_GCM_SHA256)), 2)));
   Writeln('Cipher suite is TLS_AES_128_GCM_SHA256: ', BytesToHexStr(TLS_AES_128_GCM_SHA256));
-  Writeln('Compression method len is 1: ', BytesToHexStr(UInt32ToBytesBE(Length(compressionMethod), 1)));
+  Writeln('Compression method len is 1: ', BytesToHexStr(UInt32ToBytesBE(UInt32(Length(compressionMethod)), 1)));
   Writeln('Compression method is no compression: ', BytesToHexStr(compressionMethod));
-  Writeln('Extensions len is ', Length(extensions), ': ', BytesToHexStr(UInt32ToBytesBE(Length(extensions), 2)));
+  Writeln('Extensions len is ', Length(extensions), ': ', BytesToHexStr(UInt32ToBytesBE(UInt32(Length(extensions)), 2)));
   Writeln('Extension type is supported_versions: ', BytesToHexStr(supportedVersions));
   Writeln('Extension len is 3: ', BytesToHexStr(supportedVersionsLength));
   Writeln('Extension field len is 2: ', BytesToHexStr(anotherSupportedVersionsLength));
@@ -898,14 +897,14 @@ function HandleFinished(Finished, Key, Msgs: TBytes): Boolean;
 begin
   if Finished[0] <> $14
     then raise Exception.Create('Handshake type is not FINISHED (0x14)');
-  verify_data_len := Finished[1] shl 16 or Finished[2] shl 8 or Finished[3];
+  verify_data_len := Integer(Finished[1] shl 16 or Finished[2] shl 8 or Finished[3]);
   SetLength(verify_data, verify_data_len);
   Move(Finished[4], verify_data[0], verify_data_len);
   TSHA256.DigestBytes(Msgs, shaMsgs);
   TSHA256.HMACHexa(Key, shaMsgs, hmac_digest);
   hmac_digest_bytes := HexStrToBytes(hmac_digest);
   Result := True;
-  for i := 0 to Length(verify_data) - 1 do
+  for i := 0 to Integer(Length(verify_data) - 1) do
     if verify_data[i] <> hmac_digest_bytes[i] then
     begin
       Result := False;
@@ -953,7 +952,7 @@ begin
   // Extract public EC key if present
   while ptr < extensionsLength do
   begin
-    extensionType := (extensions[ptr] shl 8) or extensions[ptr + 1];
+    extensionType := Integer((extensions[ptr] shl 8) or extensions[ptr + 1]);
     extensionLength := (extensions[ptr + 2] shl 8) or extensions[ptr + 3];
 
     if extensionType <> KEY_SHARE then
@@ -961,7 +960,7 @@ begin
       Inc(ptr, extensionLength + 4);
       Continue;
     end;
-    keyExchangeLen := (extensions[ptr + 6] shl 8) or extensions[ptr + 7];
+    keyExchangeLen := Integer((extensions[ptr + 6] shl 8) or extensions[ptr + 7]);
     publicECKey := Copy(extensions, ptr + 8, keyExchangeLen);
     Break;
   end;
@@ -970,6 +969,7 @@ begin
     raise Exception.Create('No public ECDH key in server hello');
 
   // Return extracted data
+  Result := Nil;
   SetLength(Result, 32);
   Move(publicECKey[0], Result[0], 32);
   if not Debug then Exit;
@@ -1032,8 +1032,9 @@ function RecvNumBytes(Socket: TSocket; num: Integer): TBytes;
    Buffer: array[0..65535] of Byte;
    BytesRead: Integer;
 begin
-  BytesRead := fprecv(Socket, @Buffer[0], num, 0);
+  BytesRead := fprecv(Socket, @Buffer[0], size_t(num), 0);
   if BytesRead <= 0 then raise Exception.Create('Server terminated the connection');
+  Result := Nil;
   SetLength(Result, BytesRead);
   Move(Buffer[0], Result[0], BytesRead);
 end;
@@ -1090,7 +1091,7 @@ begin
   RecvTLS(Socket, RecType, TLSEncRec);
   if RecType <> TLS_APPLICATION_DATA
     then raise Exception.Create('TLS record type is not TLS_APPLICATION_DATA');
-  seq_num_bytes := SeqNumToBytes(seq_num);
+  seq_num_bytes := SeqNumToBytes(UInt32(seq_num));
   xor_nonce := XorBytes(nonce, seq_num_bytes);
   data := [
     $17, //APPLICATION_DATA
@@ -1201,7 +1202,7 @@ begin
   WriteLn('Encrypted extensions: ',BytesToHexStr(encrypted_extentions), ', parsing skipped');
 
   msgs_so_far := ConcatenateBytes(ClientServerHello, encrypted_extentions);
-  server_seq_num += 1;
+  Inc(server_seq_num);
   
   {WriteLn('--------------------');
   WriteLn('Receiving server certificates');
@@ -1243,12 +1244,12 @@ begin
     $14, //FINISHED
     Byte(Length(client_finish_val_bytes) shr 16), Byte(Length(client_finish_val_bytes) shr 8), Byte(Length(client_finish_val_bytes) and $FF)
   ];
-  encrypted_handshake_msg := do_authenticated_encryption(client_write_key, client_write_iv, client_seq_num,
+  encrypted_handshake_msg := do_authenticated_encryption(client_write_key, client_write_iv, UInt32(client_seq_num),
                                                          TBytes([$16]),
                                                          ConcatenateBytes(handshake_msg, client_finish_val_bytes));
   SendTLS(CSocket, TLS_APPLICATION_DATA, encrypted_handshake_msg);
 
-  client_seq_num += 1;
+  Inc(client_seq_num);
   WriteLn('Handshake finished, regenerating secrets for application data');
 
   //  Rederive application secrets
@@ -1275,20 +1276,20 @@ begin
   WriteLn('--------------------');
   WriteLn('Request: ', REQUESTS);
   
-  encrypted_msg := do_authenticated_encryption(client_write_key, client_write_iv, client_seq_num,
+  encrypted_msg := do_authenticated_encryption(client_write_key, client_write_iv, UInt32(client_seq_num),
                                                TBytes([$17]),
                                                TEncoding.UTF8.GetBytes(REQUESTS));
   WriteLn(BytesToHexStr(TEncoding.UTF8.GetBytes(REQUESTS)));
   WriteLn(Length(encrypted_msg));
   SendTLS(CSocket, TLS_APPLICATION_DATA, encrypted_msg);
-  client_seq_num += 1;
+  Inc(client_seq_num);
 
   WriteLn('Receiving an answer'); 
     while True do
       begin
         RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, decrypted_msg);
         WriteLn(rec_type);
-        server_seq_num += 1;
+        Inc(server_seq_num);
         case rec_type of
           Byte(TLS_APPLICATION_DATA): WriteLn(BytesToStr(decrypted_msg));
           Byte(TLS_HANDSHAKE):        if decrypted_msg[0] = 4
