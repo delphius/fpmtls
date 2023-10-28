@@ -19,8 +19,8 @@ uses
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
   const
     LEGACY_TLS_VERSION: array of Byte = ($03, $03);
-    REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: www.freepascal.org'+#13#10+'Connection: close'+#13#10#13#10;
-    host = 'www.freepascal.org';
+    REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: www.google.com'+#13#10+'Connection: close'+#13#10#13#10;
+    host = 'www.google.com';
     port = 443;
 
   // TLS Cipher Suites
@@ -32,7 +32,7 @@ uses
 //  Converts an array of bytes to an unsigned 32-bit integer (LongWord) in big-endian format.
 function WordToBE(Buffer:TBytes):Word;
 begin
- Result:= ((Buffer[0] and 255) shl 8) or (Buffer[1] and 255);
+ Result:= Word((Buffer[0] and 255) shl 8) or (Buffer[1] and 255);
 end;
 //  Converts an array of bytes to an unsigned 32-bit integer (LongWord) in big-endian format.
 function LongWordToBE(Buffer:PByte):LongWord;
@@ -52,6 +52,7 @@ function UInt32ToBytesBE(num: UInt32; bytes_len: Integer): TBytes;
 var
   i: Integer;
 begin
+  Result := nil;
   SetLength(Result, bytes_len);
   for i := 0 to bytes_len - 1 do
     Result[i] := Byte((num shr (8 * (bytes_len - 1 - i))) and $FF);
@@ -61,6 +62,7 @@ function UInt64ToBytesBE(value: UInt64): TBytes;
 var
   i: Integer;
 begin
+  Result := nil;
   SetLength(Result, 8);
   for i := 0 to 7 do
     Result[i] := Byte((value shr (56 - i * 8)) and $FF);
@@ -68,15 +70,17 @@ end;
 // Concatenates two arrays of bytes and returns the result.
 function ConcatenateBytes(const A, B: TBytes): TBytes;
 begin
+  Result := nil;
   SetLength(Result, Length(A) + Length(B));
-  Move(A[0], Result[0], Length(A));
-  Move(B[0], Result[Length(A)], Length(B));
+  if Length(A) > 0 then Move(A[0], Result[0], Length(A));
+  if Length(B) > 0 then Move(B[0], Result[Length(A)], Length(B));
 end;
 
 function SeqNumToBytes(seq: UInt32): TBytes;
 var
   i: Integer;
 begin
+  Result := nil;
   SetLength(Result, 12);
   FillByte(Result[0], 8, 0);
   for i := 0 to 3 do
@@ -87,9 +91,10 @@ function XorBytes(a, b: TBytes): TBytes;
 var
   i: Integer;
 begin
+  Result := nil;
   SetLength(Result, Length(a));
 
-  for i := 0 to High(a) do
+  for i := 0 to Byte(High(a)) do
   begin
     Result[i] := a[i] xor b[i];
   end;
@@ -169,24 +174,23 @@ end;
 
 function AES128Encrypt(key, plaintext: TBytes): TBytes;
 type
-  AESColumn=UInt32;
   FourBytes=array[0..3] of byte;
 var
   enc_keys: TAESKeySchedule;
   round,i:byte;
   State, MixBase:array[0..3] of UInt32;
 
-function GMul4(a:AESColumn;b:byte):AESColumn;
+function GMul4(a:UInt32;b:byte):UInt32;
 var
-  c:AESColumn absolute Result;
+  c:UInt32 absolute Result;
   i:byte;
 begin
-  c:=a * AESColumn(b and 1);
+  c:=UInt32(a * UInt32(b and 1));
   for i:=1 to 7 do
    begin
-    a:=((a and $7F7F7F7F) shl 1) xor ($1b * ((a and $80808080) shr 7));
-    b:=b shr 1;
-    c:=c xor (a * (b and 1));
+    a:=UInt32(((a and $7F7F7F7F) shl 1) xor ($1b * ((a and $80808080) shr 7)));
+    b:=Byte(b shr 1);
+    c:=UInt32(c xor (a * (b and 1)));
    end;
 end;
 
@@ -390,8 +394,10 @@ function calc_pretag(key: TBytes; encrypted_msg, associated_data: TBytes): TByte
 const
   BLOCK_SIZE = 16;
 var
-  v, u, h: TBytes;
-  data: TBytes;
+  v: TBytes = nil;
+  u: TBytes = nil;
+  h: TBytes = nil;
+  data: TBytes = nil;
 begin
   SetLength(v, BLOCK_SIZE * ((Length(associated_data) + BLOCK_SIZE - 1) div BLOCK_SIZE) - Length(associated_data));
   SetLength(u, BLOCK_SIZE * ((Length(encrypted_msg) + BLOCK_SIZE - 1) div BLOCK_SIZE) - Length(encrypted_msg));
@@ -403,6 +409,7 @@ begin
   Move(u[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg)], Length(u));
   Move(UInt64ToBytesBE(Length(associated_data) * 8)[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg) + Length(u)], 8);
   Move(UInt64ToBytesBE(Length(encrypted_msg) * 8)[0], data[Length(associated_data) + Length(v) + Length(encrypted_msg) + Length(u) + 8], 8);
+  Result := nil;
   SetLength(Result, 16);
   GCMGHash(PByte(h), PByte(data), Length(data), PByte(Result));
 end;
@@ -712,7 +719,7 @@ const
   CLIENT_HELLO: TBytes = ($01);
   TLS_AES_128_GCM_SHA256: TBytes = ($13, $01);
 var
-  sessionID, compressionMethod, supportedVersions, supportedVersionsLength, anotherSupportedVersionsLength,
+  sessionID, compressionMethod, serverName, serverNameExtention, supportedVersions, supportedVersionsLength, anotherSupportedVersionsLength,
   tls13Version, supportedVersionExtension, signatureAlgos, signatureAlgosLength, anotherSignatureAlgosLength, rsaPssRsaeSha256Algo,
   signatureAlgosExtension, supportedGroups, supportedGroupsLength, anotherSupportedGroupsLength, secp256r1Group, supportedGroupsExtension,
   ecdhPubKey, keyShare, keyShareLength, anotherKeyShareLength, keyExchangeLen, keyShareExtension, extensions, clientHelloData,
@@ -721,7 +728,7 @@ var
 begin
   sessionID := [$00];
   compressionMethod := [$00]; // no compression
-
+  
   // Server Name Extention
   serverName := TEncoding.UTF8.GetBytes(host);
   serverNameExtention := [$00, $00, // assigned value for extension "server name"
@@ -732,7 +739,7 @@ begin
                          ];
   serverNameExtention := ConcatenateBytes(serverNameExtention, serverName);
   WriteLn('SNI: ', BytesToHexStr(serverNameExtention));
-  
+
   supportedVersions := [$00, $2B];
   supportedVersionsLength := [$00, $03];
   anotherSupportedVersionsLength := [$02];
@@ -1026,8 +1033,9 @@ function RecvNumBytes(Socket: TSocket; num: Integer): TBytes;
    BytesRead: Integer;
 begin
   BytesRead := fprecv(Socket, @Buffer[0], num, 0);
+  if BytesRead <= 0 then raise Exception.Create('Server terminated the connection');
   SetLength(Result, BytesRead);
-  Move(Buffer[0], Result[0], BytesRead);   
+  Move(Buffer[0], Result[0], BytesRead);
 end;
 
 procedure RecvTLS(Socket: TSocket; out RecType: TRecType; out TLSRec: TBytes);
@@ -1195,7 +1203,7 @@ begin
   msgs_so_far := ConcatenateBytes(ClientServerHello, encrypted_extentions);
   server_seq_num += 1;
   
-  WriteLn('--------------------');
+  {WriteLn('--------------------');
   WriteLn('Receiving server certificates');
   RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, server_cert);
   WriteLn('Got ',Length(server_cert), ' bytes of certs, parsing skipped');
@@ -1217,7 +1225,7 @@ begin
   RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, finished);
   if HandleFinished(finished, server_finished_key, msgs_so_far)
     then WriteLn('Server sent VALID finish handshake msg')
-    else WriteLn('Warning: Server sent WRONG handshake finished msg');
+    else WriteLn('Warning: Server sent WRONG handshake finished msg');}
   
   WriteLn('--------------------');
   WriteLn('Handshake: sending a change cipher msg');
@@ -1279,6 +1287,7 @@ begin
     while True do
       begin
         RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, decrypted_msg);
+        WriteLn(rec_type);
         server_seq_num += 1;
         case rec_type of
           Byte(TLS_APPLICATION_DATA): WriteLn(BytesToStr(decrypted_msg));
