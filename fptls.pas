@@ -18,7 +18,7 @@ uses
   // The legacy_version field MUST be set to 0x0303, which is the version number for TLS 1.2
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
   const
-    host = 'example.org';
+    host = 'gitlab.com';
     port = 443;
     REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: ' + host +#13#10+'Connection: close'+#13#10#13#10;
     LEGACY_TLS_VERSION: array of Byte = ($03, $03);
