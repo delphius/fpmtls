@@ -18,10 +18,10 @@ uses
   // The legacy_version field MUST be set to 0x0303, which is the version number for TLS 1.2
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
   const
-    LEGACY_TLS_VERSION: array of Byte = ($03, $03);
-    REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: www.freepascal.org'+#13#10+'Connection: close'+#13#10#13#10;
-    host = 'www.freepascal.org';
+    host = 'example.org';
     port = 443;
+    REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: ' + host +#13#10+'Connection: close'+#13#10#13#10;
+    LEGACY_TLS_VERSION: array of Byte = ($03, $03);
 
   // TLS Cipher Suites
   // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4
@@ -1003,14 +1003,16 @@ var
   PublicKey, ServerKey, CommonKey: TBytes;
   server_hs_secret, server_write_key, server_write_iv, server_finished_key: TBytes;
   client_hs_secret, client_write_key, client_write_iv, client_finished_key: TBytes;
-  client_seq_num, server_seq_num: Integer;
+  client_seq_num, server_seq_num, msg_length, pos_msg: Integer;
   rec_type: Byte;
   encrypted_extentions, server_cert, cert_verify, finished, client_finish_val_bytes, msgs_so_far,
   msgs_sha256, handshake_msg, encrypted_handshake_msg: TBytes;
   msgs_so_far_hash, premaster_secret, master_secret_bytes: TBytes;
   server_secret, client_secret: TBytes;
   encrypted_msg, decrypted_msg: TBytes;
+  server_keyex, sert_request, hello_done: TBytes;
   RecType: TRecType;
+  finished_flag: Boolean;
 const
   ZERO_BYTES_32: TBytes = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
   PrivateKey: TBytes = (
@@ -1030,7 +1032,10 @@ begin
   While count > 0 do
     begin
       BytesRead := fprecv(Socket, @Buffer[BytesReadCount], count, 0);
-      if BytesRead <= 0 then raise Exception.Create('Server terminated the connection');
+      if BytesRead <= 0 then begin
+                               WriteLn('Server terminated the connection');
+                               Halt(0);
+                             end; 
       BytesReadCount += BytesRead;
       WriteLn('Bytes read: ', BytesRead);
       WriteLn('Num bytes: ', count);
@@ -1197,44 +1202,105 @@ begin
   client_seq_num := 0; //for use in authenticated encryption
   server_seq_num := 0;
 
-  WriteLn('--------------------');
-  WriteLn('Receiving encrypted extensions');
-  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, encrypted_extentions);
-  WriteLn('Encrypted extensions: ',BytesToHexStr(encrypted_extentions), ', parsing skipped');
+  msgs_so_far := ClientServerHello;
+  finished_flag := False;
 
-  msgs_so_far := ConcatenateBytes(ClientServerHello, encrypted_extentions);
+  repeat
+  WriteLn('--------------------');
+  WriteLn('Receiving and derypt message');
+  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, decrypted_msg);
+  WriteLn('Record Type: ', TRecType(rec_type), ' (0x', IntToHex(Byte(rec_type)), ')');
+  WriteLn('Decrypted message length: ',Length(decrypted_msg), ', parsing messages...');
+
+  pos_msg := 0;
+
+  while pos_msg < Length(decrypted_msg) do
+    begin
+      WriteLn('--------------------');
+      case decrypted_msg[pos_msg] of
+        $08: begin
+               WriteLn('Parsing Encrypted extensions');
+               msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+               WriteLn('Length: ', msg_length);
+               encrypted_extentions := copy(decrypted_msg, pos_msg, 4 + msg_length);
+               msgs_so_far := ConcatenateBytes(msgs_so_far, encrypted_extentions);
+               WriteLn('Message: ', BytesToHexStr(encrypted_extentions));
+               pos_msg += 4 + msg_length;
+             end;
+        $0b: begin
+               WriteLn('Parsing Certificate');
+               msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+               WriteLn('Length: ', msg_length);
+               server_cert := copy(decrypted_msg, pos_msg, 4 + msg_length);
+               msgs_so_far := ConcatenateBytes(msgs_so_far, server_cert);
+               WriteLn('Message: ', BytesToHexStr(server_cert));
+               pos_msg += 4 + msg_length;
+             end;
+        $0c: begin
+               WriteLn('Parsing Server key exchange');
+               msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+               WriteLn('Length: ', msg_length);
+               server_keyex := copy(decrypted_msg, pos_msg, 4 + msg_length);
+               msgs_so_far := ConcatenateBytes(msgs_so_far, server_keyex);
+               WriteLn('Message: ', BytesToHexStr(server_keyex));
+               pos_msg += 4 + msg_length;
+             end;
+        $0d: begin
+               WriteLn('Parsing Certificate request');
+               msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+               WriteLn('Length: ', msg_length);
+               sert_request := copy(decrypted_msg, pos_msg, 4 + msg_length);
+               msgs_so_far := ConcatenateBytes(msgs_so_far, sert_request);
+               WriteLn('Message: ', BytesToHexStr(sert_request));
+               pos_msg += 4 + msg_length;
+             end;
+        $0e: begin
+               WriteLn('Parsing Server hello done');
+               msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+               WriteLn('Length: ', msg_length);
+               hello_done := copy(decrypted_msg, pos_msg, 4 + msg_length);
+               msgs_so_far := ConcatenateBytes(msgs_so_far, hello_done);
+               WriteLn('Message: ', BytesToHexStr(hello_done));
+               pos_msg += 4 + msg_length;
+             end;
+        $0f: begin
+              WriteLn('Parsing Certificate verify');
+              msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+              WriteLn('Length: ', msg_length);
+              cert_verify := copy(decrypted_msg, pos_msg, 4 + msg_length);
+              msgs_so_far := ConcatenateBytes(msgs_so_far, cert_verify);
+              WriteLn('Message: ', BytesToHexStr(cert_verify));
+              pos_msg += 4 + msg_length;
+             end;
+        $10: begin
+              WriteLn('Parsing Client key exchange');
+             end;
+        $14: begin
+              WriteLn('Parsing Finish');
+              msg_length := decrypted_msg[pos_msg + 1] shl 16 + decrypted_msg[pos_msg + 2] shl 8 + decrypted_msg[pos_msg + 3] and $FF;
+              WriteLn('Length: ', msg_length);
+              finished := copy(decrypted_msg, pos_msg, 4 + msg_length);
+              WriteLn('Message: ', BytesToHexStr(finished));
+              pos_msg += 4 + msg_length;
+              if HandleFinished(finished, server_finished_key, msgs_so_far)
+                then WriteLn('Server sent VALID finish handshake msg')
+                else WriteLn('Warning: Server sent WRONG handshake finished msg');
+              msgs_so_far := ConcatenateBytes(msgs_so_far, finished);
+              finished_flag := true;
+             end
+        else raise Exception.Create('Parsing Unknown message: (0x' + IntToHex(decrypted_msg[pos_msg]) + ')');
+        end;
+    end;
+
   server_seq_num += 1;
-  
-  WriteLn('--------------------');
-  WriteLn('Receiving server certificates');
-  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, server_cert);
-  WriteLn('Got ',Length(server_cert), ' bytes of certs, parsing skipped');
-
-  msgs_so_far := ConcatenateBytes(msgs_so_far, server_cert);
-  server_seq_num += 1;
-
-  WriteLn('--------------------');
-  WriteLn('Receiving server verify certificate');
-  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, cert_verify);
-  WriteLn('Got ',Length(cert_verify), ' bytes of verify cert, parsing skipped');
-  WriteLn('Certificate verifying skipped');
-  
-  msgs_so_far := ConcatenateBytes(msgs_so_far, cert_verify);
-  server_seq_num += 1;
-
-  WriteLn('--------------------');
-  WriteLn('Receiving server finished');
-  RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, finished);
-  if HandleFinished(finished, server_finished_key, msgs_so_far)
-    then WriteLn('Server sent VALID finish handshake msg')
-    else WriteLn('Warning: Server sent WRONG handshake finished msg');
+  until finished_flag;
   
   WriteLn('--------------------');
   WriteLn('Handshake: sending a change cipher msg');
   SendTLS(CSocket, TLS_CHANGE_CIPHER, TBytes([$01]));
 
   //All client messages beyond this point are encrypted
-  msgs_so_far := ConcatenateBytes(msgs_so_far, finished);
+  //msgs_so_far := ConcatenateBytes(msgs_so_far, finished);
   TSHA256.DigestBytes(msgs_so_far, msgs_sha256);
   TSHA256.HMACHexa(client_finished_key, msgs_sha256, client_finish_val);
   client_finish_val_bytes := HexStrToBytes(client_finish_val);
