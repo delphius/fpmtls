@@ -10,7 +10,7 @@ program fptls;
 }
 {$mode objfpc}{$H+}
 uses
-  sysutils, fpsha256, fphashutils, sockets, resolve, fpecc;
+  sysutils, fpsha256, fphashutils, sockets, resolve;
 
   var
    Debug: Boolean;
@@ -18,7 +18,7 @@ uses
   // The legacy_version field MUST be set to 0x0303, which is the version number for TLS 1.2
   // In tls 1.3 the version tls 1.2 is sent for better compatibility
   const
-    host = 'gitlab.com';
+    host = 'www.freepascal.org';
     port = 443;
     REQUESTS = 'GET / HTTP/1.1'+#13#10+'Host: ' + host +#13#10+'Connection: close'+#13#10#13#10;
     LEGACY_TLS_VERSION: array of Byte = ($03, $03);
@@ -1003,16 +1003,18 @@ var
   PublicKey, ServerKey, CommonKey: TBytes;
   server_hs_secret, server_write_key, server_write_iv, server_finished_key: TBytes;
   client_hs_secret, client_write_key, client_write_iv, client_finished_key: TBytes;
-  client_seq_num, server_seq_num, msg_length, pos_msg: Integer;
+  client_seq_num, server_seq_num, msg_length, pos_msg, BodyStartPos, i: Integer;
   rec_type: Byte;
   encrypted_extentions, server_cert, cert_verify, finished, client_finish_val_bytes, msgs_so_far,
   msgs_sha256, handshake_msg, encrypted_handshake_msg: TBytes;
   msgs_so_far_hash, premaster_secret, master_secret_bytes: TBytes;
   server_secret, client_secret: TBytes;
   encrypted_msg, decrypted_msg: TBytes;
-  server_keyex, sert_request, hello_done: TBytes;
+  server_keyex, sert_request, hello_done, full_msg: TBytes;
   RecType: TRecType;
   finished_flag: Boolean;
+  FileHandle: File of Byte;
+  FilePath: string;
 const
   ZERO_BYTES_32: TBytes = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
   PrivateKey: TBytes = (
@@ -1021,6 +1023,7 @@ const
     $DF, $4C, $2F, $87, $EB, $C0, $99, $2A,
     $B1, $77, $FB, $A5, $1D, $B9, $2C, $2A
   );
+  DocMarker: TBytes = ($3C, $21); // <! bytes
 
 function RecvNumBytes(Socket: TSocket; num: Integer): TBytes;
   var
@@ -1037,8 +1040,6 @@ begin
                                Halt(0);
                              end; 
       BytesReadCount += BytesRead;
-      WriteLn('Bytes read: ', BytesRead);
-      WriteLn('Num bytes: ', count);
       count := count - BytesRead;
     end;
   SetLength(Result, num);
@@ -1095,6 +1096,14 @@ var RecType: TRecType;
 
 begin
   RecvTLS(Socket, RecType, TLSEncRec);
+
+  // For middlebox and proxy compatibility, TLS 1.3 MAY includes the now irrelevant Change Cipher Spec message.
+  // From this point on, everything else from the server is encrypted and has type Application data.
+  if RecType = TLS_CHANGE_CIPHER then begin
+                                        WriteLn('Received a change cipher msg. ');
+                                        WriteLn('--------------------');
+                                        RecvTLS(Socket, RecType, TLSEncRec);
+                                      end;
   if RecType <> TLS_APPLICATION_DATA
     then raise Exception.Create('TLS record type is not TLS_APPLICATION_DATA');
   seq_num_bytes := SeqNumToBytes(seq_num);
@@ -1157,10 +1166,6 @@ begin
   ClientHello := request;
   ServerHello := ServerResponce;
   ServerKey := HandleServerHello(ServerResponce);
-  WriteLn('Receiving a change cipher msg, all communication will be encrypted');
-  RecvTLS(CSocket, RecType, ServerResponce);
-  WriteLn('Server change cipher ', BytesToHexStr(ServerResponce));
-  WriteLn('--------------------');
   SetLength(CommonKey,32);
   CryptoScalarmult(@CommonKey[0], @PrivateKey[0], @ServerKey[0]);
   WriteLn('Our curve25519 common key: ', BytesToHexStr(CommonKey), ', deriving keys');
@@ -1350,6 +1355,8 @@ begin
   WriteLn(Length(encrypted_msg));
   SendTLS(CSocket, TLS_APPLICATION_DATA, encrypted_msg);
   client_seq_num += 1;
+  
+  full_msg := nil;
 
   WriteLn('Receiving an answer'); 
     while True do
@@ -1357,7 +1364,10 @@ begin
         RecvTLSandDecrypt(CSocket, server_write_key, server_write_iv, server_seq_num, rec_type, decrypted_msg);
         server_seq_num += 1;
         case rec_type of
-          Byte(TLS_APPLICATION_DATA): WriteLn(BytesToStr(decrypted_msg));
+          Byte(TLS_APPLICATION_DATA): begin
+                                        WriteLn(BytesToStr(decrypted_msg));
+                                        full_msg := ConcatenateBytes(full_msg, decrypted_msg);
+                                      end;
           Byte(TLS_HANDSHAKE):        if decrypted_msg[0] = 4
                                          then WriteLn('New session ticket: ', BytesToHexStr(decrypted_msg));
           Byte(TLS_ALERT):
@@ -1368,6 +1378,33 @@ begin
           else WriteLn ('Got msg with unknown rec_type', rec_type); 
           end;
       end;
-  
+
   CloseSocket(CSocket);
+
+  FilePath := 'download.html';
+  BodyStartPos := -1;
+
+  for i := 0 to Length(full_msg) - 4 do
+  begin
+    if CompareMem(@full_msg[i], @DocMarker[0], Length(DocMarker)) then
+    begin
+      BodyStartPos := i;
+      Break;
+    end;
+  end;
+
+  try
+    Assign(FileHandle, FilePath);
+    Rewrite(FileHandle);
+
+    if Length(full_msg) > 0 then
+      BlockWrite(FileHandle, full_msg[BodyStartPos], Length(full_msg) - BodyStartPos);
+
+    Close(FileHandle);
+
+    writeln('Data saved to file: ', FilePath);
+  except
+    on E: Exception do
+      writeln('Error: ', E.Message);
+  end;
 end.
